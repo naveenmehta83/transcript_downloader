@@ -1,157 +1,185 @@
-import logging
-import re
-import os
-import requests
-from typing import Optional, Tuple
-from youtube_transcript_api import YouTubeTranscriptApi
+#!/usr/bin/env python3
+"""
+YouTube Transcript Extractor - No Proxy Version
+Removes Tor dependency and focuses on robust retry mechanisms
+"""
 
-# Configure logging
+import logging
+import os
+import random
+import re
+import sys
+import time
+from typing import List, Tuple
+
+import requests
+from youtube_transcript_api import (
+    YouTubeTranscriptApi,
+    IpBlocked,
+    RequestBlocked,
+    NoTranscriptFound,
+    TranscriptsDisabled,
+)
+
+# Setup logging
 def setup_logging():
-    """Set up logging configuration"""
-    # Create logs directory if it doesn't exist
-    os.makedirs('logs', exist_ok=True)
-    
-    # Create formatters
-    file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    
-    # Create and configure file handler
-    file_handler = logging.FileHandler('logs/transcript_extracter.log')
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(file_formatter)
-    
-    # Create and configure console handler
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(console_formatter)
-    
-    # Get the logger
-    logger = logging.getLogger(__name__)
+    os.makedirs("logs", exist_ok=True)
+    logger = logging.getLogger("TranscriptExtractor")
     logger.setLevel(logging.DEBUG)
     
-    # Add handlers to logger
-    logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
+    # File and console handlers
+    fh = logging.FileHandler("logs/transcript_extractor.log", encoding="utf-8")
+    ch = logging.StreamHandler()
     
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    fh.setFormatter(formatter)
+    ch.setFormatter(formatter)
+    
+    logger.addHandler(fh)
+    logger.addHandler(ch)
     return logger
 
 logger = setup_logging()
 
 class TranscriptExtractor:
+    def __init__(self):
+        self.api = YouTubeTranscriptApi()
+        self.min_delay = 5  # Increased delay to avoid blocks
+        self.max_delay = 15
+        self.max_retries = 3
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
 
-    def sanitize_filename(self, title: str) -> str:
-        """Remove invalid characters from filename"""
-        # Remove invalid chars
-        title = re.sub(r'[<>:"/\\|?*]', '', title)
-        # Replace problematic characters
-        title = title.replace('\n', ' ').replace('\r', ' ')
-        # Trim spaces and dots at the end
-        title = title.strip('. ')
-        return title if title else 'untitled'
-
-    def extract_transcript(self, video_url: str, output_file: Optional[str] = None) -> Tuple[str, str]:
-        """Extract transcript from a YouTube video."""
-        try:
-            # Extract video ID from either youtube.com or youtu.be URLs
-            logger.info(f"Processing URL: {video_url}")
-            
-            # Get video ID
-            if 'youtu.be/' in video_url:
-                logger.info("Detected youtu.be URL")
-                parts = video_url.split('youtu.be/')
-                if len(parts) < 2:
-                    raise ValueError("Invalid youtu.be URL format")
-                video_id = parts[1].split('?')[0]
-            else:
-                logger.info("Detected youtube.com URL")
-                match = re.search(r"[?&]v=([a-zA-Z0-9_-]{11})", video_url)
-                if not match:
-                    raise ValueError("Invalid YouTube URL")
-                video_id = match.group(1)
-            
-            logger.info(f"Extracted video ID: {video_id}")
-            if not video_id or len(video_id) != 11:
-                raise ValueError(f"Invalid video ID length: {len(video_id) if video_id else 'None'}")
-            
-            # Get video title
-            logger.info("Fetching video title...")
+    def _rand_delay(self):
+        return random.uniform(self.min_delay, self.max_delay)
+    
+    def _extract_video_id(self, url: str) -> str:
+        if "youtu.be/" in url:
+            return url.split("youtu.be/")[1].split("?")[0]
+        match = re.search(r"[?&]v=([a-zA-Z0-9_-]{11})", url)
+        if not match:
+            raise ValueError(f"Cannot parse video ID from URL: {url}")
+        return match.group(1)
+    
+    def _sanitize_filename(self, name: str) -> str:
+        name = re.sub(r'[<>:"/\\|?*\n\r]+', "", name).strip()
+        return re.sub(r"\s+", " ", name)[:250]
+    
+    def _fetch_title(self, url: str) -> str:
+        """Fetch title with extended retry logic"""
+        for attempt in range(self.max_retries):
             try:
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                    'Accept-Language': 'en-US,en;q=0.9'
-                }
-                response = requests.get(video_url, headers=headers)
+                time.sleep(self._rand_delay())
+                response = requests.get(url, headers=self.headers, timeout=30)
                 response.raise_for_status()
                 
-                # Extract title using regex
-                title_match = re.search(r'<title>(.+?)</title>', response.text)
-                if title_match:
-                    title = title_match.group(1).replace('- YouTube', '').strip()
-                    title = self.sanitize_filename(title)
-                else:
-                    raise ValueError("Could not find video title")
-                    
+                match = re.search(r"<title>(.+?)</title>", response.text)
+                if match:
+                    title = match.group(1).replace("- YouTube", "").strip()
+                    return self._sanitize_filename(title)
             except Exception as e:
-                logger.warning(f"Could not fetch title: {str(e)}")
-                title = video_id  # Use video ID as fallback
+                logger.warning(f"Title fetch attempt {attempt + 1} failed: {e}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self._rand_delay() * (attempt + 1))
+        
+        # Fallback to video ID
+        return self._extract_video_id(url)
+    
+    def _fetch_transcript_direct(self, video_id: str) -> List[dict]:
+        """Direct transcript fetch without proxy"""
+        for attempt in range(self.max_retries):
+            try:
+                # Extended delay to avoid rate limiting
+                time.sleep(self._rand_delay())
+                
+                transcript_list = self.api.list(video_id)
+                
+                # Try manual English first, then auto-generated
+                try:
+                    transcript = transcript_list.find_transcript(['en'])
+                except NoTranscriptFound:
+                    logger.info("Manual English not found, trying auto-generated")
+                    transcript = transcript_list.find_generated_transcript(['en'])
+                
+                return transcript.fetch().to_raw_data()
+                
+            except (IpBlocked, RequestBlocked) as e:
+                logger.error(f"IP blocked on attempt {attempt + 1}: {e}")
+                if attempt < self.max_retries - 1:
+                    # Exponential backoff for IP blocks
+                    wait_time = self._rand_delay() * (2 ** attempt)
+                    logger.info(f"Waiting {wait_time:.1f}s before retry...")
+                    time.sleep(wait_time)
+                else:
+                    raise RuntimeError("All attempts failed due to IP blocking")
+                    
+            except (TranscriptsDisabled, NoTranscriptFound) as e:
+                raise RuntimeError(f"Transcript not available: {e}")
+                
+            except Exception as e:
+                logger.warning(f"Attempt {attempt + 1} failed: {e}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self._rand_delay())
+        
+        raise RuntimeError(f"Failed after {self.max_retries} attempts")
+    
+    def extract_transcript(self, url: str, output_dir: str = "transcripts") -> Tuple[str, str]:
+        """Extract transcript without proxy dependency"""
+        try:
+            video_id = self._extract_video_id(url)
+            logger.info(f"Processing video ID: {video_id}")
+            
+            # Get title and transcript
+            title = self._fetch_title(url)
             logger.info(f"Video title: {title}")
             
-            # Get transcript
-            logger.info(f"Fetching transcript for video: {video_id}")
-            ytt_api = YouTubeTranscriptApi()
-            transcript = ytt_api.fetch(video_id)
+            transcript_data = self._fetch_transcript_direct(video_id)
             
-            # Combine transcript text
-            text = "\n".join(entry.text for entry in transcript)
+            # Save transcript
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(output_dir, f"{title}.txt")
             
-            # Save to file if specified
-            if output_file:
-                # Replace the filename with the title
-                output_dir = os.path.dirname(output_file)
-                output_file = os.path.join(output_dir, f"{title}.txt")
-                os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
-                with open(output_file, "w", encoding="utf-8") as f:
-                    f.write(text)
-                logger.info(f"Saved transcript to: {output_file}")
+            with open(output_path, 'w', encoding='utf-8') as f:
+                for entry in transcript_data:
+                    f.write(entry['text'] + '\n')
             
-            return text, output_file
+            logger.info(f"Transcript saved: {output_path}")
+            return title, output_path
             
         except Exception as e:
-            logger.error(f"Failed to extract transcript: {str(e)}")
+            logger.error(f"Failed to extract transcript: {e}")
             raise
 
 def main():
     extractor = TranscriptExtractor()
     
+    # Read URLs
     try:
-        # Create transcripts directory
-        os.makedirs("transcripts", exist_ok=True)
-        
-        # Process each video
-        with open("urls.txt", "r") as f:
+        with open("urls.txt", "r", encoding="utf-8") as f:
             urls = [line.strip() for line in f if line.strip()]
-        
-        print(f"\nProcessing {len(urls)} videos...")
-        for i, url in enumerate(urls, 1):
-            try:
-                if 'youtu.be/' in url:
-                    video_id = url.split('youtu.be/')[1].split('?')[0]
-                else:
-                    video_id = re.search(r"[?&]v=([a-zA-Z0-9_-]{11})", url).group(1)
-                output_file = os.path.join("transcripts", f"{video_id}.txt")
-                
-                print(f"[{i}/{len(urls)}] Processing: {url}")
-                _, saved_file = extractor.extract_transcript(url, output_file)
-                print(f" Saved transcript to: {saved_file}")
-                
-            except Exception as e:
-                print(f" Error processing {url}: {str(e)}")
-                continue
-        
-        print("\nProcessing completed!")
-        
-    except Exception as e:
-        print(f"Error: {str(e)}")
+    except FileNotFoundError:
+        logger.error("urls.txt not found. Create it with one YouTube URL per line.")
+        return
+    
+    logger.info(f"Processing {len(urls)} URLs...")
+    success = fail = 0
+    
+    for i, url in enumerate(urls, 1):
+        logger.info(f"[{i}/{len(urls)}] Processing: {url}")
+        try:
+            title, path = extractor.extract_transcript(url)
+            logger.info(f"✓ Success: {title}")
+            success += 1
+        except Exception as e:
+            logger.error(f"✗ Failed: {e}")
+            fail += 1
+    
+    logger.info(f"Completed: {success} successful, {fail} failed")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.warning("Interrupted by user")
+        sys.exit(1)

@@ -1,1 +1,19 @@
-youtube_transcript_api
+# Modern YouTube Transcript Extractor - Requirements (2025)
+
+# Core library (choose the version that matches your needs)
+youtube-transcript-api>=1.0.0  # Native Webshare support (recommended)
+
+# Proxy Support Options (choose one or more)
+
+# Option 1: requests[socks] - Easy SOCKS support (includes PySocks automatically)
+requests[socks]>=2.10.0
+
+# Option 2: Modern python-socks library (actively maintained alternative)
+python-socks[asyncio]>=2.0.0
+
+# Option 3: Alternative SOCKS libraries
+# sockslib>=1.0.0
+# socks-client>=1.5.0
+
+# Standard dependencies
+requests>=2.28.0
