@@ -1,0 +1,4 @@
+# YouTube Playlist Extractor Configuration
+PLAYLIST_URL=https://www.youtube.com/playlist?list=PLrrGjxxIn4htBd5O34VHFtq6t0wszZiBf
+API_KEY=AIzaSyAVpKQc4UquQ_gn2yWf8zT_YafTqVYvr6k
+OUTPUT_FILE=urls.txt

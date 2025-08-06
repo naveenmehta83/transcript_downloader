@@ -96,13 +96,16 @@ class TranscriptExtractor:
                 transcript_list = self.api.list(video_id)
                 
                 # Try manual English first, then auto-generated
+                language = ['en', 'en-US', 'hi']
+                logger.info(f"Attempting to fetch transcript for video ID: {video_id} in languages: {language}")
                 try:
-                    transcript = transcript_list.find_transcript(['en'])
+                    transcript = transcript_list.find_transcript(language)
                 except NoTranscriptFound:
                     logger.info("Manual English not found, trying auto-generated")
-                    transcript = transcript_list.find_generated_transcript(['en'])
+                    transcript = transcript_list.find_generated_transcript(language)
                 
                 return transcript.fetch().to_raw_data()
+                time.sleep(5)  # Additional delay after successful fetch
                 
             except (IpBlocked, RequestBlocked) as e:
                 logger.error(f"IP blocked on attempt {attempt + 1}: {e}")
@@ -128,7 +131,14 @@ class TranscriptExtractor:
         """Extract transcript without proxy dependency"""
         try:
             video_id = self._extract_video_id(url)
-            logger.info(f"Processing video ID: {video_id}")
+            if not video_id:
+                logger.warning(f"No video ID could be extracted from URL: {url}")
+                return
+            logger.info(f"✅ Successfully extracted video ID: {video_id}")
+            
+            # Pause execution for 5 seconds
+            logger.info("⏳ Waiting for 5 seconds before proceeding...")
+            time.sleep(5)
             
             # Get title and transcript
             title = self._fetch_title(url)
@@ -167,9 +177,11 @@ def main():
     
     for i, url in enumerate(urls, 1):
         logger.info(f"[{i}/{len(urls)}] Processing: {url}")
+        time.sleep(10)  # Delay between requests
         try:
             title, path = extractor.extract_transcript(url)
             logger.info(f"✓ Success: {title}")
+            # time.sleep(10)  # Delay between requests
             success += 1
         except Exception as e:
             logger.error(f"✗ Failed: {e}")
